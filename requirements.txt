@@ -1,0 +1,5 @@
+# PRD §14 — Dependencies
+selenium>=4.20.0
+webdriver-manager>=4.0.0
+pyyaml>=6.0
+python-dateutil>=2.9.0

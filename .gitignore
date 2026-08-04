@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Environment & secrets (FR-8, §6 Keamanan data)
+.env
+session/
+session/*.json
+
+# Hasil scrape & log
+output/
+logs/
+
+# Tooling
+.DS_Store
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

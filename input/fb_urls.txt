@@ -1,0 +1,6 @@
+# Sample input Facebook (PRD §8).
+# Satu URL per baris. Baris kosong & komentar (#...) diabaikan.
+# Ganti dengan URL publik yang valid sebelum menjalankan.
+
+# https://www.facebook.com/somepage/posts/1234567890
+# https://fb.watch/abc123

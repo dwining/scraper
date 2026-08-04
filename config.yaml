@@ -1,0 +1,40 @@
+# Konfigurasi utama fb-scraper (PRD §10)
+# Semua delay/retry/max_comments diubah di sini tanpa mengubah kode.
+
+browser:
+  # Opsi ukuran jendela; dipilih acak setiap sesi agar tidak identik.
+  window_size_options:
+    - [1366, 768]
+    - [1440, 900]
+    - [1920, 1080]
+  # Default headful (browser testing/terlihat). Headless hanya untuk debugging.
+  headless: false
+  # Batas waktu tunggu elemen (detik).
+  implicit_wait_sec: 10
+  page_load_timeout_sec: 60
+
+delays:
+  # Rentang [min, max] detik, dipilih acak (uniform).
+  between_actions_sec: [2, 6]
+  between_urls_sec: [8, 20]
+  # Jarak scroll per langkah dalam piksel.
+  scroll_step_px: [200, 600]
+  # Probabilitas aksi "melihat-lihat" (scroll kecil naik lalu turun).
+  look_around_probability: 0.3
+
+scraping:
+  max_comments_per_post: 500
+  max_retry: 2
+  retry_delay_sec: 5
+  # Waktu maksimum menunggu komentar pertama muncul (detik).
+  comments_wait_sec: 15
+  # Jika ditemukan pola rate-limit, berhenti seluruh batch + cooldown (menit).
+  rate_limit_cooldown_min: 30
+
+output:
+  base_dir: "output"
+  # ddmmyy + HHMMSS (PRD §12 Q1 → mengikuti config, contoh: 04080625-FB-153045.json)
+  filename_time_format: "%d%m%y%H%M%S"
+
+logging:
+  log_dir: "logs"

@@ -1,0 +1,6 @@
+# Sample input Instagram (PRD §8).
+# Satu URL per baris. Baris kosong & komentar (#...) diabaikan.
+# Ganti dengan URL publik yang valid sebelum menjalankan.
+
+# https://www.instagram.com/p/Cabc123XyZ/
+# https://www.instagram.com/reel/Def456/
