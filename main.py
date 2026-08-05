@@ -78,6 +78,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Jalankan browser headless (hanya untuk debugging; tidak direkomendasikan).",
     )
+    parser.add_argument(
+        "--use-replies",
+        action="store_true",
+        help="Ikut scrape replies/balasan (default: hanya komentar top-level).",
+    )
     return parser.parse_args()
 
 
@@ -102,18 +107,23 @@ def main() -> int:
 
     headless = bool(config["browser"]["headless"])
     max_comments = config["scraping"]["max_comments_per_post"]
+    use_replies = args.use_replies or bool(
+        config.get("scraping", {}).get("use_replies", False)
+    )
 
     log_dir = config.get("logging", {}).get("log_dir", "logs")
     setup_logging(log_dir)
     log = get_logger("main")
 
     log.info(
-        "Startup: platform=%s input=%s headless=%s max_comments=%s output_dir=%s",
+        "Startup: platform=%s input=%s headless=%s max_comments=%s "
+        "output_dir=%s use_replies=%s",
         args.platform,
         args.input,
         headless,
         max_comments,
         config["output"]["base_dir"],
+        use_replies,
     )
 
     # ------------------------------------------------------------------ #
@@ -149,6 +159,8 @@ def main() -> int:
 
     ScraperClass = FbScraper if args.platform == "fb" else IgScraper
     scraper = ScraperClass(driver, config)
+    if hasattr(scraper, "use_replies"):
+        scraper.use_replies = use_replies
 
     total = len(urls)
     success = 0

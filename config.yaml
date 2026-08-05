@@ -25,6 +25,9 @@ delays:
 scraping:
   # 0 = tidak terbatas (semua komentar yang berhasil dimuat oleh lazy-load).
   max_comments_per_post: 0
+  # false = hanya komentar top-level (tanpa reply); true = reply ikut discrape.
+  # Default false; flag CLI --use-replies menimpanya.
+  use_replies: false
   max_retry: 2
   retry_delay_sec: 5
   # Waktu maksimum menunggu komentar pertama muncul (detik).

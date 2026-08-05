@@ -55,6 +55,7 @@ import json
 import random
 import re
 from datetime import datetime
+from typing import Optional
 from urllib.parse import parse_qs, unquote, urlparse
 
 from selenium.common.exceptions import NoSuchElementException
@@ -137,11 +138,13 @@ class FbScraper:
     # Safety cap for the expand/collect loop (FR-5).
     MAX_EXPAND_ITERATIONS = 25
 
-    def __init__(self, driver, config: dict):
+    def __init__(self, driver, config: dict, on_progress=None):
         """driver: a Selenium WebDriver; config: dict from load_config()."""
         self.driver = driver
         self.config = config
         self.logger = get_logger("fb_scraper")
+        self.use_replies = False
+        self.on_progress = on_progress
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -191,8 +194,8 @@ class FbScraper:
             if self._select_all_comments_filter():
                 sleep_random(sec_range=(1, 2))
 
-            max_comments = int(self.config["scraping"]["max_comments_per_post"])
-            comments = self._load_and_collect_comments(max_comments)
+            max_comments = self._max_comments()
+            comments = self._load_and_collect_comments(url, post_caption, max_comments)
 
             scraped_at = datetime.now().astimezone()
             result = {
@@ -216,7 +219,20 @@ class FbScraper:
     # ------------------------------------------------------------------ #
     # Expand + collect
     # ------------------------------------------------------------------ #
-    def _load_and_collect_comments(self, max_comments: int) -> list:
+    def _max_comments(self) -> Optional[int]:
+        """Batas komentar per postingan; None berarti tak terbatas (0)."""
+        try:
+            value = int(self.config["scraping"]["max_comments_per_post"])
+        except Exception:
+            value = 0
+        return value if value > 0 else None
+
+    def _load_and_collect_comments(
+        self,
+        url: str,
+        caption: Optional[str],
+        max_comments: Optional[int],
+    ) -> list:
         """Expand and collect comments with human-like pacing.
 
         Loop: collect currently rendered comments -> check stop conditions ->
@@ -244,8 +260,10 @@ class FbScraper:
         with implicit_wait_off(self.driver):
             # Expand collapsed reply threads once up-front (the "All comments"
             # filter has already been applied by the caller) so reply wrappers
-            # ("Reply by ...") are visible when collection starts.
-            self._expand_replies()
+            # ("Reply by ...") are visible when collection starts.  Only done
+            # when ``use_replies`` is enabled (default: top-level comments).
+            if self.use_replies:
+                self._expand_replies()
             for iteration in range(1, self.MAX_EXPAND_ITERATIONS + 1):
                 # Rate-limit re-check between iterations (FR-8).
                 rate_limited, marker = detect_rate_limit(self.driver)
@@ -255,21 +273,31 @@ class FbScraper:
                     )
 
                 before = len(comments)
-                for item in self._collect_visible_comments(
-                    max_comments - len(comments)
-                ):
+                limit = None if max_comments is None else max_comments - len(comments)
+                for item in self._collect_visible_comments(limit):
                     key = item["comment_id"] or (item["author_name"], item["comment_text"])
                     if key in seen:
                         continue
                     seen.add(key)
                     comments.append(item)
+                    self._emit_progress(url, caption, comments)
                 newly_added = len(comments) - before
                 self.logger.info(
                     "expansion iteration %d: +%d new (total %d)",
                     iteration, newly_added, len(comments),
                 )
+                self._emit_progress(
+                    url,
+                    caption,
+                    comments,
+                    progress={
+                        "iterations": iteration,
+                        "max_iterations": self.MAX_EXPAND_ITERATIONS,
+                        "new_comments": newly_added,
+                    },
+                )
 
-                if len(comments) >= max_comments:
+                if max_comments is not None and len(comments) >= max_comments:
                     self.logger.info(
                         "Reached max_comments_per_post=%d", max_comments
                     )
@@ -318,6 +346,27 @@ class FbScraper:
                 sleep_random(sec_range=between)
 
         return comments
+
+    def _emit_progress(self, url: str, caption: Optional[str],
+                       comments: list, progress: Optional[dict] = None) -> None:
+        """Kirim hasil parsial ke callback on_progress (save JSON live)."""
+        if self.on_progress is None:
+            return
+        try:
+            partial = {
+                "post_id": extract_post_id(url, "fb"),
+                "platform": "FB",
+                "post_url": url,
+                "scraped_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "post_caption": caption,
+                "total_comments_scraped": len(comments),
+                "comments": comments,
+            }
+            if progress is not None:
+                partial["progress"] = progress
+            self.on_progress(partial)
+        except Exception:
+            pass  # kegagalan progress save tidak boleh menggagalkan scrape
 
     def _click_more_button(self, button) -> bool:
         """Click an expand control using human-like interactions + JS fallback."""
@@ -553,7 +602,7 @@ class FbScraper:
     # ------------------------------------------------------------------ #
     # Comment collection (defensive per-element)
     # ------------------------------------------------------------------ #
-    def _collect_visible_comments(self, limit: int) -> list:
+    def _collect_visible_comments(self, limit: Optional[int]) -> list:
         """Find currently rendered comment wrappers and parse each one.
 
         Every wrapper is parsed independently; a single malformed element is
@@ -562,7 +611,7 @@ class FbScraper:
         wrappers = self._find_comment_wrappers()
         items = []
         for wrapper in wrappers:
-            if len(items) >= limit:
+            if limit is not None and len(items) >= limit:
                 break
             try:
                 item = self._parse_comment(wrapper)
@@ -570,6 +619,8 @@ class FbScraper:
                 self.logger.warning("Skipping malformed comment element: %s", exc)
                 continue
             if not item["comment_text"] and not item["author_name"]:
+                continue
+            if not self.use_replies and item["is_reply"]:
                 continue
             items.append(item)
         return items
@@ -614,15 +665,18 @@ class FbScraper:
         # Primary pass (modern FB replies): reply wrappers carry
         # aria-label="Reply by <Author> to ...".  Added directly so
         # _parse_comment can flag them as replies via their aria-label.
-        try:
-            reply_wrappers = self.driver.find_elements(
-                By.CSS_SELECTOR, self.REPLY_WRAPPER_SELECTOR
-            )
-        except Exception:
-            reply_wrappers = []
-        for el in reply_wrappers:
-            if self._is_displayed(el):
-                add_wrapper(el)
+        # Skipped entirely when ``use_replies`` is disabled (default):
+        # only top-level comments are collected.
+        if self.use_replies:
+            try:
+                reply_wrappers = self.driver.find_elements(
+                    By.CSS_SELECTOR, self.REPLY_WRAPPER_SELECTOR
+                )
+            except Exception:
+                reply_wrappers = []
+            for el in reply_wrappers:
+                if self._is_displayed(el):
+                    add_wrapper(el)
 
         # Primary pass (legacy): elements that definitely hold comment text.
         for selector in self.COMMENT_TEXT_SELECTORS:
@@ -766,12 +820,13 @@ class FbScraper:
         if comment_a or comment_b:
             if aria_label.startswith("reply by"):
                 item["is_reply"] = True
-                item["parent_comment_id"] = comment_a
+                item["parent_comment_id"] = self._extract_parent_comment_id(wrapper)
                 item["comment_id"] = comment_b or comment_a
             else:
                 item["comment_id"] = comment_b or comment_a
         elif aria_label.startswith("reply by"):
             item["is_reply"] = True
+            item["parent_comment_id"] = self._extract_parent_comment_id(wrapper)
         try:
             name, url = self._extract_author(wrapper)
             item["author_name"] = name
@@ -802,6 +857,8 @@ class FbScraper:
             # OR-combine: the aria-label-based "Reply by" detection above may
             # already have set is_reply=True; never overwrite it with False.
             item["is_reply"] = item["is_reply"] or self._is_reply(wrapper)
+            if item["is_reply"] and not item["parent_comment_id"]:
+                item["parent_comment_id"] = self._extract_parent_comment_id(wrapper)
         except Exception:
             pass
         return item
@@ -872,6 +929,44 @@ class FbScraper:
         if not m:
             return None, None
         return m.group(1), m.group(2)
+
+    def _extract_parent_comment_id(self, wrapper) -> Optional[str]:
+        """parent_comment_id dari struktur DOM (thread container).
+
+        Modern FB mengelompokkan setiap thread dalam container div yang berisi
+        wrapper komentar top-level induk (``div[aria-label^="Comment by" i]``)
+        sebagai descendant pertamanya; reply thread itu berada di container
+        yang sama (reply-to-reply di-subgroup yang lebih dalam). Container
+        dicari via descendant (``.//``) agar reply berkedalaman berapa pun
+        tetap tertaut — untuk nested reply, fallback-nya adalah thread root.
+
+        Decode base64 ``comment:<a>_<b>`` TIDAK bisa dipakai untuk parent:
+        ``<a>`` adalah thread id yang DIBAGI semua komentar (top-level maupun
+        reply), bukan id komentar induk; ``<b>`` adalah id milik komentar itu
+        sendiri.
+        """
+        try:
+            container = wrapper.find_element(
+                By.XPATH,
+                "./ancestor::div[.//div[starts-with(translate(@aria-label,"
+                "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),"
+                "'comment by')]][1]",
+            )
+            parent = container.find_element(
+                By.XPATH,
+                ".//div[starts-with(translate(@aria-label,"
+                "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),"
+                "'comment by')][1]",
+            )
+            for link in parent.find_elements(By.CSS_SELECTOR, 'a[href*="comment_id="]'):
+                comment_a, comment_b = self._decode_fb_comment_id(
+                    link.get_attribute("href")
+                )
+                if comment_a or comment_b:
+                    return comment_b or comment_a
+        except Exception:
+            pass
+        return None
 
     def _extract_author(self, wrapper):
         """Return (author_name, author_profile_url), either may be None.

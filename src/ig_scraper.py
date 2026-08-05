@@ -116,6 +116,7 @@ class IgScraper:
         self.driver = driver
         self.config = config
         self.on_progress = on_progress
+        self.use_replies = False
         self.logger = get_logger(f"{__name__}.IgScraper")
 
     # ------------------------------------------------------------- public API
@@ -601,6 +602,8 @@ class IgScraper:
                         continue
                     if not comment.get("author_name") and not comment.get("comment_text"):
                         # Item kosong/junk, kemungkinan bukan komentar.
+                        continue
+                    if not self.use_replies and comment.get("is_reply"):
                         continue
                     key = self._comment_key(comment)
                     if key in seen:
