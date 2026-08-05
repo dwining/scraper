@@ -24,6 +24,7 @@ from src.io_utils import (
     extract_post_id,
     read_urls_from_file,
     save_json_result,
+    write_json,
 )
 from src.logger import get_logger, setup_logging
 
@@ -166,6 +167,25 @@ def main() -> int:
             n_comments = 0
             result: dict | None = None
 
+            # Compute the fixed output path once per URL so the live file has a
+            # predictable name, and wire the incremental-save callback.
+            post_id = extract_post_id(url, args.platform)
+            now = datetime.now().astimezone()
+            filename = build_filename(
+                post_id,
+                args.platform,
+                now,
+                config["output"]["filename_time_format"],
+            )
+            out_dir = ensure_output_dir(
+                config["output"]["base_dir"], args.platform
+            )
+            output_path = out_dir / filename
+            if hasattr(scraper, "on_progress"):
+                scraper.on_progress = (
+                    lambda partial, path=output_path: write_json(partial, path)
+                )
+
             # Retry loop (PRD FR-8): attempt 0..max_retry.
             for attempt in range(max_retry + 1):
                 try:
@@ -207,18 +227,7 @@ def main() -> int:
             # ------------------------------------------------------------------ #
             if status == "success" and result is not None:
                 try:
-                    now = datetime.now().astimezone()
-                    post_id = extract_post_id(url, args.platform)
-                    filename = build_filename(
-                        post_id,
-                        args.platform,
-                        now,
-                        config["output"]["filename_time_format"],
-                    )
-                    out_dir = ensure_output_dir(
-                        config["output"]["base_dir"], args.platform
-                    )
-                    output_path = save_json_result(result, out_dir / filename)
+                    output_path = save_json_result(result, output_path)
                     success += 1
                     log.info(
                         "Sukses: %d komentar dari %s -> %s",

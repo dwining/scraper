@@ -145,14 +145,20 @@ def ensure_output_dir(base_dir: str, platform: str) -> Path:
     return out_dir
 
 
+def write_json(data: dict, output_path: Path) -> Path:
+    """Write ``data`` as pretty JSON without logging (for incremental saves)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=2)
+    return output_path
+
+
 def save_json_result(data: dict, output_path: Path) -> Path:
     """Write ``data`` as pretty JSON (``ensure_ascii=False, indent=2``).
 
     Returns the ``output_path`` as a ``Path``.
     """
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8") as fh:
-        json.dump(data, fh, ensure_ascii=False, indent=2)
+    output_path = write_json(data, output_path)
     log.info("Saved result to %s", output_path)
     return output_path

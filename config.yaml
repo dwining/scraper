@@ -23,7 +23,8 @@ delays:
   look_around_probability: 0.3
 
 scraping:
-  max_comments_per_post: 500
+  # 0 = tidak terbatas (semua komentar yang berhasil dimuat oleh lazy-load).
+  max_comments_per_post: 0
   max_retry: 2
   retry_delay_sec: 5
   # Waktu maksimum menunggu komentar pertama muncul (detik).

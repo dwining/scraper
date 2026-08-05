@@ -87,7 +87,7 @@ class IgScraper:
 
     PLATFORM = "IG"
 
-    MAX_SCROLL_ITERATIONS = 30
+    MAX_SCROLL_ITERATIONS = 100
     STABLE_ROUNDS_LIMIT = 3
 
     # Selector container komentar (DOM Instagram saat ini, single-column).
@@ -112,9 +112,10 @@ class IgScraper:
     LIKE_LINE_RE = re.compile(r"^([\d.,]+)\s+like$", re.I)
     VIEW_REPLIES_RE = re.compile(r"(?i)view\s*(?:all\s+[\d.,]+\s+)?replies")
 
-    def __init__(self, driver: WebDriver, config: dict):
+    def __init__(self, driver: WebDriver, config: dict, on_progress=None):
         self.driver = driver
         self.config = config
+        self.on_progress = on_progress
         self.logger = get_logger(f"{__name__}.IgScraper")
 
     # ------------------------------------------------------------- public API
@@ -132,9 +133,9 @@ class IgScraper:
             self._check_login_wall()
             self._check_rate_limit()
             caption = self._extract_caption()
-            items = self._load_comments()
+            items = self._load_comments(url, caption)
             max_comments = self._max_comments()
-            comments = self._collect_comments(items, max_comments, caption)
+            comments = self._collect_comments(items, max_comments, caption, url)
 
             result = {
                 "post_id": extract_post_id(url, "ig"),
@@ -248,11 +249,13 @@ class IgScraper:
 
     # -------------------------------------------------------- loading komentar
 
-    def _max_comments(self) -> int:
+    def _max_comments(self) -> Optional[int]:
+        """Batas komentar per postingan; None berarti tak terbatas (0)."""
         try:
-            return int(self.config["scraping"]["max_comments_per_post"])
+            value = int(self.config["scraping"]["max_comments_per_post"])
         except Exception:
-            return 500
+            value = 0
+        return value if value > 0 else None
 
     def _sec_range(self, key: str = "between_actions_sec") -> Tuple[float, float]:
         try:
@@ -481,7 +484,7 @@ class IgScraper:
         except Exception:
             pass
 
-    def _load_comments(self):
+    def _load_comments(self, url: str, caption: Optional[str]):
         """Muat komentar tambahan via tombol 'Load more comments' sampai stabil."""
         # Bulk DOM scans must not stall on the implicit wait; explicit
         # sleep_random pauses below give lazy-loaded content time to appear.
@@ -511,7 +514,7 @@ class IgScraper:
                     count,
                 )
 
-                if count >= max_comments:
+                if max_comments is not None and count >= max_comments:
                     self.logger.info(
                         "[IG] Batas max_comments tercapai (%d).", max_comments
                     )
@@ -532,6 +535,17 @@ class IgScraper:
 
                 sleep_random(self._sec_range())
 
+                self._emit_progress(
+                    url,
+                    caption,
+                    [],
+                    progress={
+                        "iterations": iteration + 1,
+                        "max_iterations": self.MAX_SCROLL_ITERATIONS,
+                        "rows_visible": count,
+                    },
+                )
+
                 if random.random() < self._look_around_probability():
                     try:
                         look_around(self.driver)
@@ -544,13 +558,40 @@ class IgScraper:
 
     # ---------------------------------------------------------- ekstraksi item
 
-    def _collect_comments(self, items, max_comments: int, caption: Optional[str]):
+    def _emit_progress(self, url: str, caption: Optional[str],
+                       comments: list, progress: Optional[dict] = None) -> None:
+        """Kirim hasil parsial ke callback on_progress (untuk save JSON live)."""
+        if self.on_progress is None:
+            return
+        try:
+            partial = {
+                "post_id": extract_post_id(url, "ig"),
+                "platform": self.PLATFORM,
+                "post_url": url,
+                "scraped_at": datetime.datetime.now().astimezone().isoformat(),
+                "post_caption": caption,
+                "total_comments_scraped": len(comments),
+                "comments": comments,
+            }
+            if progress is not None:
+                partial["progress"] = progress
+            self.on_progress(partial)
+        except Exception:
+            pass  # kegagalan progress save tidak boleh menggagalkan scrape
+
+    def _collect_comments(
+        self,
+        items,
+        max_comments: Optional[int],
+        caption: Optional[str],
+        url: str,
+    ):
         comments = []
         seen = set()
         # Per-item extraction does many find_elements calls; keep them fast.
         with implicit_wait_off(self.driver):
             for item in items:
-                if len(comments) >= max_comments:
+                if max_comments is not None and len(comments) >= max_comments:
                     break
                 try:
                     if self._looks_like_caption(item, caption):
@@ -566,6 +607,7 @@ class IgScraper:
                         continue
                     seen.add(key)
                     comments.append(comment)
+                    self._emit_progress(url, caption, comments)
                 except Exception as exc:
                     self.logger.debug("[IG] Baris komentar di-skip: %s", exc)
                     continue
